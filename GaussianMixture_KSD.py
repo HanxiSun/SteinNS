@@ -1,8 +1,8 @@
 """
 
-SteinNS: 8Gaussian_Fisher.py
+SteinNS: GaussianMixture_KSD.py
 
-Created on 10/7/18 8:41 PM
+Created on 10/7/18 8:40 PM
 
 @author: Hanxi Sun
 
@@ -30,7 +30,7 @@ Sigma_det = np.linalg.det(Sigma)
 p = np.ones(n_comp) / n_comp  # equal weights
 
 # true sample
-show_size = 2000  # number of samples showed each time
+show_size = 2000  # number of samples showed at each time
 label = np.random.choice(n_comp, size=show_size, p=p)[:, np.newaxis]
 true_sample = np.sum(np.stack([np.random.multivariate_normal(mu[i], Sigma[i], show_size) * (label == i)
                                for i in range(n_comp)]), 0)
@@ -57,12 +57,9 @@ def mmd_eval(x, y=true_sample):
 ########################################################################################################################
 # model parameters
 
-lr_d = lr_g = 1e-4  # learning rate
-h_dim_d = h_dim_g = 200  # number of hidden neurons per layer of the generator
+lr = 2e-4  # learning rate
+h_dim_g = 200  # number of hidden neurons per layer of the generator
 z_dim = 5  # noise dimension
-lbd = 10.  # lambda for the L2 regularization
-lbd_ksd = 2.  # lambda for the KSD regularization
-n_D = 5  # number of updates of the discriminator
 
 mb_size = 500  # mini-batch size
 n_iter = 20000
@@ -93,7 +90,7 @@ def show_plot(sample, method="", is_true_sample=False, it=None, loss=None, mmd=N
               fname=None, show_axis=True, show_true=False, show_contour=True, fix_window=True, equal=True,
               c_contour="Red", alpha=0.2, col=['m', 'g']):
     """
-    Show samples in plt.
+    Show samples with plt.
     :param sample: the sample
     :param method: method name
     :param is_true_sample: if the ploted sample is the true sample
@@ -182,7 +179,7 @@ show_plot(true_sample, is_true_sample=True, title=True, fix_window=False)
 
 
 ########################################################################################################################
-# network parameters
+# network
 tf.reset_default_graph()
 
 initializer = tf.contrib.layers.xavier_initializer()
@@ -205,16 +202,6 @@ G_scale = tf.get_variable('g_scale', [1, X_dim], initializer=tf.constant_initial
 G_location = tf.get_variable('g_location', [1, X_dim], initializer=tf.constant_initializer(30.))
 
 theta_G = [G_W1, G_b1, G_W2, G_b2, G_W3, G_b3, G_scale, G_location]
-
-
-D_W1 = tf.get_variable('D_w1', [X_dim, h_dim_d], dtype=tf.float32, initializer=initializer)
-D_b1 = tf.get_variable('D_b1', [h_dim_d], initializer=initializer)
-D_W2 = tf.get_variable('D_w2', [h_dim_d, h_dim_d], dtype=tf.float32, initializer=initializer)
-D_b2 = tf.get_variable('D_b2', [h_dim_d], initializer=initializer)
-D_W3 = tf.get_variable('D_w3', [h_dim_d, X_dim], dtype=tf.float32, initializer=initializer)
-D_b3 = tf.get_variable('D_b3', [X_dim], initializer=initializer)
-
-theta_D = [D_W1, D_W2, D_W3, D_b1, D_b2, D_b3]
 
 
 ########################################################################################################################
@@ -263,13 +250,6 @@ def generator(z):
     return out
 
 
-def discriminator(x):
-    D_h1 = tf.nn.tanh(tf.matmul(x, D_W1) + D_b1)
-    D_h2 = tf.nn.tanh(tf.matmul(D_h1, D_W2) + D_b2)
-    out = (tf.matmul(D_h2, D_W3) + D_b3)
-    return out
-
-
 def rbf_kernel(x, dim=X_dim, h=1.):
     # Reference 1: https://github.com/ChunyuanLI/SVGD/blob/master/demo_svgd.ipynb
     # Reference 2: https://github.com/yc14600/svgd/blob/master/svgd.py
@@ -289,6 +269,7 @@ def rbf_kernel(x, dim=X_dim, h=1.):
 
 
 def imq_kernel(x, dim=X_dim, beta=-.5, c=1.):
+    # IMQ kernel
     XY = tf.matmul(x, tf.transpose(x))
     X2_ = tf.reshape(tf.reduce_sum(tf.square(x), axis=1), shape=[tf.shape(x)[0], 1])
     X2 = tf.tile(X2_, [1, tf.shape(x)[0]])
@@ -307,6 +288,7 @@ def imq_kernel(x, dim=X_dim, beta=-.5, c=1.):
 
 kernels = {"rbf": rbf_kernel,
            "imq": imq_kernel}
+
 Kernel = kernels[kernel]
 
 
@@ -323,72 +305,34 @@ def ksd_emp(x, dim=X_dim):
     return ksd
 
 
-def diag_gradient(y, x, dim=X_dim):
-    dg = tf.stack([tf.gradients(y[:, i], x)[0][:, i] for i in range(dim)], axis=0)
-    return tf.transpose(dg)
-
-
 G_sample = generator(z)
-D_fake = discriminator(G_sample)
+
 ksd = ksd_emp(G_sample)
-
-loss1 = tf.expand_dims(tf.reduce_sum(tf.multiply(S_q(G_sample), D_fake), 1), 1)
-loss2 = tf.expand_dims(tf.reduce_sum(diag_gradient(D_fake, G_sample), 1), 1)
-
-loss_NS = tf.abs(tf.reduce_mean(loss1 + loss2)) - lbd * tf.reduce_mean(tf.square(D_fake))
-loss_NS_ksd = loss_NS + lbd_ksd * ksd
-
-solver_NS_D = optimizer(learning_rate=lr_d).minimize(-loss_NS, var_list=theta_D)
-solver_NS_G = optimizer(learning_rate=lr_g).minimize(loss_NS, var_list=theta_G)
-solver_NS_G_ksd = optimizer(learning_rate=lr_g).minimize(loss_NS_ksd, var_list=theta_G)
+solver_KSD = optimizer(learning_rate=lr).minimize(ksd, var_list=theta_G)
 
 
 #######################################################################################################################
 
-
 sess = tf.Session()
 sess.run(tf.global_variables_initializer())
 
-D_losses = np.zeros(n_iter)
-G_losses = np.zeros(n_iter)
+losses = np.zeros(n_iter)
 mmds = np.zeros(1 + (n_iter // iter_display))
 
-loss_curr = None
 for it in range(n_iter):
-    z0 = sample_z(mb_size, z_dim)
 
-    for _ in range(n_D):
-        _, loss_curr = sess.run([solver_NS_D, loss_NS],
-                                feed_dict={z: sample_z(mb_size, z_dim)})
-
-    if np.isnan(loss_curr):
-        print("NAN loss:", it)
-        break
-
-    D_losses[it] = loss_curr
-
-    _, loss_curr = sess.run([solver_NS_G, loss_NS],
+    _, loss_curr = sess.run([solver_KSD, ksd],
                             feed_dict={z: sample_z(mb_size, z_dim)})
-
-    if np.isnan(loss_curr):
-        print("NAN loss:", it)
-        break
-
-    G_losses[it] = loss_curr
+    losses[it] = loss_curr
 
     if it % iter_display == 0:
         samples = sess.run(G_sample, feed_dict={z: sample_z(show_size, z_dim)})
         mmd_curr = mmd_eval(samples)
         mmds[it // iter_display] = mmd_curr
-        show_plot(samples, "Fisher", it=it, loss=loss_curr, mmd=mmd_curr, fname=None, title=True, fix_window=True)
+        show_plot(samples, "KSD", it=it, loss=loss_curr, mmd=mmd_curr, fname=None, title=True, fix_window=True)
 
-plt.plot(D_losses)
-plt.title("loss_D (min={} at iter {})".format(np.min(D_losses), np.argmin(D_losses)))
-plt.show()
-plt.close()
-
-plt.plot(G_losses)
-plt.title("loss_G (min={} at iter {})".format(np.min(G_losses), np.argmin(G_losses)))
+plt.plot(losses)
+plt.title("loss (min={} at iter {})".format(np.min(losses), np.argmin(losses)))
 plt.show()
 plt.close()
 
@@ -396,8 +340,6 @@ plt.plot(np.arange(len(mmds)) * iter_display, mmds)
 plt.title("mmd (min={} at iter {})".format(np.min(mmds), np.argmin(mmds) * iter_display))
 plt.show()
 plt.close()
-
-
 
 
 
